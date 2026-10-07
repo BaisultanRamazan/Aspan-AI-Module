@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Fall Detector</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      text-align: center;
+      overflow: hidden;
+    }
+    #status {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-size: 18px;
+      font-weight: 600;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(10px);
+    }
+    .safe { color: #4ade80; }
+    .alert { background: #dc2626 !important; color: #fff; animation: blink 0.5s infinite; }
+    @keyframes blink { 50% { opacity: 0.6; } }
+    
+    /* Контейнер для наложения элементов друг на друга */
+    #container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 5;
+      pointer-events: none; /* Пропускает клики сквозь холст */
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+  <div id="status" class="safe">Инициализация нейросети...</div>
+  
+  <div id="container">
+    <video id="webcam" playsinline autoplay muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('canvas');
+    const ctx = canvasElement.getContext('2d');
+    const statusBox = document.getElementById('status');
+
+    let horizontalStartTime = null;
+    let isFallen = false;
+    let isProcessing = false;
+
+    // Функция отрисовки рамки и скелета
+    function drawDetection(landmarks, isFallenState) {
+      // Подгоняем размеры canvas под текущий размер экрана
+      canvasElement.width = videoElement.clientWidth;
+      canvasElement.height = videoElement.clientHeight;
+
+      ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      if (!landmarks) return;
+
+      const color = isFallenState ? '#dc2626' : '#4ade80'; // Красный или Зеленый
+      const label = isFallenState ? 'ПАДЕНИЕ!' : 'СТОИТ';
+
+      // Находим границы тела для рамки (min/max X и Y)
+      let minX = canvasElement.width;
+      let maxX = 0;
+      let minY = canvasElement.height;
+      let maxY = 0;
+
+      // Получаем координаты точек с учетом размеров экрана
+      const points = landmarks.map(lm => {
+        const x = lm.x * canvasElement.width;
+        const y = lm.y * canvasElement.height;
+        
+        // Поиск границ для рамки
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+
+        return { x, y, visibility: lm.visibility };
+      });
+
+      // Добавим небольшой отступ рамке
+      const padding = 20;
+      minX = Math.max(0, minX - padding);
+      maxX = Math.min(canvasElement.width, maxX + padding);
+      minY = Math.max(0, minY - padding);
+      maxY = Math.min(canvasElement.height, maxY + padding);
+
+      // 1. Рисуем рамку (Bounding Box)
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4;
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+
+      // 2. Рисуем плашку с надписью
+      ctx.fillStyle = color;
+      ctx.font = 'bold 16px -apple-system, sans-serif';
+      const textWidth = ctx.measureText(label).width;
+      ctx.fillRect(minX, minY - 30, textWidth + 16, 30);
+
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, minX + 8, minY - 8);
+
+      // 3. Рисуем скелет (основные связи)
+      const connections = [
+        [11, 12], [11, 23], [12, 24], [23, 24], // Плечи и бедра (торс)
+        [11, 13], [13, 15], [12, 14], [14, 16], // Руки
+        [23, 25], [25, 27], [24, 26], [26, 28]  // Ноги
+      ];
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+
+      connections.forEach(([i, j]) => {
+        const pt1 = points[i];
+        const pt2 = points[j];
+        // Рисуем только если точки достаточно видимы на камере
+        if (pt1 && pt2 && pt1.visibility > 0.5 && pt2.visibility > 0.5) {
+          ctx.beginPath();
+          ctx.moveTo(pt1.x, pt1.y);
+          ctx.lineTo(pt2.x, pt2.y);
+          ctx.stroke();
+        }
+      });
+
+      // 4. Рисуем суставы (точки)
+      points.forEach((pt, index) => {
+        // Отрисуем только ключевые точки тела (плечи, локти, бедра, колени, голени)
+        const activeLandmarks = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+        if (activeLandmarks.includes(index) && pt.visibility > 0.5) {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 5, 0, 2 * Math.PI);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      });
+    }
+
+    function onResults(results) {
+      if (!results.poseLandmarks) {
+        statusBox.textContent = "Человек не в кадре";
+        statusBox.className = "safe";
+        ctx.clearRect(0, 0, canvasElement.width, canvasElement.height); // Чистим экран, если никого нет
+        return;
+      }
+
+      const lm = results.poseLandmarks;
+      const leftShoulder = lm[11], rightShoulder = lm[12];
+      const leftHip = lm[23], rightHip = lm[24];
+
+      const midShoulder = {
+        x: (leftShoulder.x + rightShoulder.x) / 2,
+        y: (leftShoulder.y + rightShoulder.y) / 2
+      };
+      const midHip = {
+        x: (leftHip.x + rightHip.x) / 2,
+        y: (leftHip.y + rightHip.y) / 2
+      };
+
+      const dx = Math.abs(midShoulder.x - midHip.x);
+      const dy = Math.abs(midShoulder.y - midHip.y);
+
+      // Тело расположено горизонтально
+      const isHorizontal = dy < dx * 0.8;
+      const now = performance.now();
+
+      if (isHorizontal) {
+        if (!horizontalStartTime) horizontalStartTime = now;
+        if (now - horizontalStartTime > 1000) {
+          isFallen = true;
+        }
+      } else {
+        horizontalStartTime = null;
+        isFallen = false;
+      }
+
+      if (isFallen) {
+        statusBox.textContent = "ВНИМАНИЕ: ПАДЕНИЕ!";
+        statusBox.className = "alert";
+      } else {
+        statusBox.textContent = "Положение: Норма";
+        statusBox.className = "safe";
+      }
+
+      // Запускаем прорисовку визуала на экране
+      drawDetection(lm, isFallen);
+    }
+
+    const pose = new Pose({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+    });
+
+    pose.setOptions({
+      modelComplexity: 0, 
+      smoothLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    pose.onResults(onResults);
+
+    async function processLoop() {
+      if (videoElement.readyState >= 2 && !isProcessing) {
+        isProcessing = true;
+        try {
+          await pose.send({ image: videoElement });
+        } catch (e) {
+          console.error("Ошибка детекции:", e);
+        }
+        isProcessing = false;
+      }
+      requestAnimationFrame(processLoop);
+    }
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          },
+          audio: false
+        });
+
+        videoElement.srcObject = stream;
+        videoElement.onloadedmetadata = () => {
+          videoElement.play();
+          statusBox.textContent = "Запуск модели...";
+          requestAnimationFrame(processLoop);
+        };
+      } catch (err) {
+        statusBox.textContent = "Ошибка камеры: " + err.name;
+      }
+    }
+
+    pose.initialize().then(() => {
+      startCamera();
+    }).catch(err => {
+      statusBox.textContent = "Ошибка загрузки WASM: " + err.message;
+    });
+  </script>
+</body>
+</html>
