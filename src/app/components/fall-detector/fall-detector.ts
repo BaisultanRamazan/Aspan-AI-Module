@@ -180,7 +180,7 @@ export class FallDetectorComponent implements AfterViewInit, OnDestroy {
     this.animationFrameId = requestAnimationFrame(this.runFrameLoop);
   };
 
-  private onResults(results: Results): void {
+private onResults(results: Results): void {
     const canvas = this.canvasRef.nativeElement;
     const video = this.videoRef.nativeElement;
     const ctx = canvas.getContext('2d');
@@ -201,6 +201,7 @@ export class FallDetectorComponent implements AfterViewInit, OnDestroy {
     const leftShoulder = lm[11], rightShoulder = lm[12];
     const leftHip = lm[23], rightHip = lm[24];
 
+    // Средняя точка плеч и бедер
     const midShoulder = {
       x: (leftShoulder.x + rightShoulder.x) / 2,
       y: (leftShoulder.y + rightShoulder.y) / 2
@@ -210,14 +211,37 @@ export class FallDetectorComponent implements AfterViewInit, OnDestroy {
       y: (leftHip.y + rightHip.y) / 2
     };
 
+    // 1. Проекции торса
     const dx = Math.abs(midShoulder.x - midHip.x);
     const dy = Math.abs(midShoulder.y - midHip.y);
-    const isHorizontal = dy < dx * 0.8;
+
+    // Более мягкий порог наклона корпуса (срабатывает уже при угле около 45-50°)
+    const isTorsoTilted = dy < dx * 1.35;
+
+    // 2. Отношение габаритов всего силуэта (Bounding Box)
+    let minX = 1, maxX = 0, minY = 1, maxY = 0;
+    lm.forEach((pt) => {
+      if ((pt.visibility ?? 1) > 0.4) {
+        if (pt.x < minX) minX = pt.x;
+        if (pt.x > maxX) maxX = pt.x;
+        if (pt.y < minY) minY = pt.y;
+        if (pt.y > maxY) maxY = pt.y;
+      }
+    });
+
+    const bodyWidth = maxX - minX;
+    const bodyHeight = maxY - minY;
+    // У стоящего человека bodyHeight в 2-3 раза больше bodyWidth. При падении они сравниваются.
+    const isBodyHorizontal = bodyHeight < bodyWidth * 1.1;
+
+    // 3. Комбинированное условие падения: наклонен торс ИЛИ силуэт стал широким/низким
+    const isFallPose = isTorsoTilted || isBodyHorizontal;
     const now = performance.now();
 
-    if (isHorizontal) {
+    if (isFallPose) {
       if (!this.horizontalStartTime) this.horizontalStartTime = now;
-      if (now - this.horizontalStartTime > 1000) {
+      // Быстрая реакция: всего 400 мс удержания позы вместо 1000 мс
+      if (now - this.horizontalStartTime > 400) {
         this.isFallen.set(true);
       }
     } else {
